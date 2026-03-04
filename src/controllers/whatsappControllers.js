@@ -1,3 +1,7 @@
+const fs = require("fs");
+const myConsole = new console.Console(fs.createWriteStream("./logs.txt"));
+
+
 const VerifyToken = (req, res) => {
   const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
@@ -18,7 +22,19 @@ const VerifyToken = (req, res) => {
 };
 
 const ReceiveMessage = (req, res) => {
-  res.sendStatus(200);
+  try{
+    var entry = (req.body["entry"])[0];
+    var changes = (req.body["changes"])[0];
+    var value = changes["value"];
+    var messageObject = value["messages"];
+
+    myConsole.log(messageObject);
+
+    res.send("EVENT_RECEIVED");
+  }catch(e){
+    myConsole.log(e);
+    res.send("EVENT_RECEIVED");
+  }
 };
 
 module.exports = { VerifyToken, ReceiveMessage };
