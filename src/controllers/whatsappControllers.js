@@ -1,7 +1,5 @@
 const VerifyToken = (req, res) => {
-
-    
-  const VERIFY_TOKEN = NCUINC2373F8E8CB83C632EDD; // el mismo que pusiste en Meta
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN; // el mismo que pusiste en Meta
 
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
