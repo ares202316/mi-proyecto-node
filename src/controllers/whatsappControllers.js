@@ -1,29 +1,19 @@
 const VerifyToken = (req, res) => {
-   
-    try{
-        var accessToken = "NCUINC2373F8E8CB83C632EDD";
-        var token = req.query("hub.verify?token");
-        var challenge = req.query["hub.challenge"];
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN; // el mismo que pusiste en Meta
 
-        if(challenge != null && token != null && token == accessToken){
-            res.send(challenge);
-        }else{
-            res.status(400).send();
-        }
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
-    }catch(e){
-        res.status(400).send();
-    }
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
 
-
-}
+  return res.sendStatus(403);
+};
 
 const ReceiveMessage = (req, res) => {
-    res.send("Hola Received");
-}
-
-module.exports = {
-    VerifyToken,
-    ReceiveMessage
-    
+  res.sendStatus(200);
 };
+
+module.exports = { VerifyToken, ReceiveMessage };
