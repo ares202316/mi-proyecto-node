@@ -16,3 +16,9 @@ const VerifyToken = (req, res) => {
 
   return res.sendStatus(403);
 };
+
+const ReceiveMessage = (req, res) => {
+  res.sendStatus(200);
+};
+
+module.exports = { VerifyToken, ReceiveMessage };
