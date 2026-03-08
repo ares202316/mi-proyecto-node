@@ -2,7 +2,15 @@ const fs = require("fs");
 const myConsole = new console.Console(fs.createWriteStream("./logs.txt"));
 
 const { getState, setState, clearState } = require("../services/stateService");
-const { listDoctors, listFreeSlots, bookAppointment } = require("../services/clinicService");
+const {
+  listDoctors,
+  listFreeSlots,
+  getPatientByWaId,
+  upsertPatient,
+  bookAppointment,
+  listMyAppointments,
+  cancelAppointment
+} = require("../services/clinicService");
 const { sendText } = require("../services/whatsappSend");
 
 const VerifyToken = (req, res) => {
@@ -11,11 +19,6 @@ const VerifyToken = (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
-  console.log("mode:", mode);
-  console.log("token:", token);
-  console.log("challenge:", challenge);
-  console.log("env:", VERIFY_TOKEN);
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
@@ -38,7 +41,6 @@ function getUserText(message) {
   return "";
 }
 
-// ✅ Si no tienes token/phoneId, no truena: solo loggea.
 async function safeSendText(to, text) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -61,40 +63,48 @@ const ReceiveMessage = async (req, res) => {
     const message = value?.messages?.[0];
     const wa_id = message?.from;
 
-    // Responder rápido a Meta
     res.send("EVENT_RECEIVED");
 
-    // A veces llegan eventos de status, no mensajes
     if (!wa_id) return;
 
     const text = getUserText(message);
     console.log("FROM:", wa_id, "TEXT:", text);
 
-    // Reinicio
     if (text === "0") {
       await clearState(wa_id);
       await safeSendText(
         wa_id,
-        "✅ Reiniciado.\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar/Reprogramar"
+        "✅ Reiniciado.\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar cita"
       );
       return;
     }
 
-    // ✅ Arreglo clave: si no hay estado, lo creamos PERO seguimos procesando el mensaje
     let current = await getState(wa_id);
     if (!current) {
       current = await setState(wa_id, "MENU", {});
-      // NO return
       await safeSendText(
         wa_id,
-        "Hola 👋\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar/Reprogramar\n\nResponde con un número."
+        "Hola 👋\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar cita\n\nResponde con un número."
       );
-      // seguimos procesando abajo (por si el texto ya era "1")
     }
 
     // MENU
     if (current.state === "MENU") {
       if (text === "1") {
+        const patient = await getPatientByWaId(wa_id);
+
+        if (!patient?.full_name) {
+          await setState(wa_id, "REGISTER_NAME", {});
+          await safeSendText(wa_id, "🧑 Antes de agendar, escribe tu nombre completo.");
+          return;
+        }
+
+        if (!patient?.identity_number) {
+          await setState(wa_id, "REGISTER_IDENTITY", { full_name: patient.full_name });
+          await safeSendText(wa_id, "🪪 Escribe tu número de identidad.");
+          return;
+        }
+
         const doctors = await listDoctors();
         const lines = doctors.map(d => `${d.id}) ${d.full_name} - ${d.specialty}`).join("\n");
         await setState(wa_id, "PICK_DOCTOR", {});
@@ -102,9 +112,70 @@ const ReceiveMessage = async (req, res) => {
         return;
       }
 
+      if (text === "2") {
+        const appts = await listMyAppointments(wa_id);
+
+        if (!appts.length) {
+          await safeSendText(wa_id, "📋 No tienes citas registradas.\n\nEscribe 1 para agendar o 0 para reiniciar.");
+          return;
+        }
+
+        const lines = appts.map(a => {
+          const date = String(a.appt_date).slice(0, 10);
+          const time = String(a.appt_time).slice(0, 5);
+          return `ID ${a.id} | ${date} ${time} | ${a.doctor_name} (${a.specialty}) | ${a.status}`;
+        }).join("\n");
+
+        await safeSendText(wa_id, `📋 Tus citas:\n${lines}\n\nEscribe 0 para menú.`);
+        return;
+      }
+
+      if (text === "3") {
+        const appts = await listMyAppointments(wa_id);
+
+        if (!appts.length) {
+          await safeSendText(wa_id, "❌ No tienes citas para cancelar.\n\nEscribe 1 para agendar o 0 para reiniciar.");
+          return;
+        }
+
+        const lines = appts.map(a => {
+          const date = String(a.appt_date).slice(0, 10);
+          const time = String(a.appt_time).slice(0, 5);
+          return `ID ${a.id} | ${date} ${time} | ${a.doctor_name}`;
+        }).join("\n");
+
+        await setState(wa_id, "CANCEL_PICK", {});
+        await safeSendText(wa_id, `🗑 Elige el ID de la cita que deseas cancelar:\n${lines}`);
+        return;
+      }
+
       await safeSendText(
         wa_id,
-        "Opción inválida. Responde:\n1) Agendar\n2) Consultar\n3) Cancelar/Reprogramar\n0) Reiniciar"
+        "Opción inválida.\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar cita\n0) Reiniciar"
+      );
+      return;
+    }
+
+    // REGISTRO NOMBRE
+    if (current.state === "REGISTER_NAME") {
+      await setState(wa_id, "REGISTER_IDENTITY", { full_name: text });
+      await safeSendText(wa_id, "🪪 Ahora escribe tu número de identidad.");
+      return;
+    }
+
+    // REGISTRO IDENTIDAD
+    if (current.state === "REGISTER_IDENTITY") {
+      const full_name = current.temp.full_name || null;
+      const identity_number = text;
+
+      await upsertPatient({ wa_id, full_name, identity_number });
+
+      const doctors = await listDoctors();
+      const lines = doctors.map(d => `${d.id}) ${d.full_name} - ${d.specialty}`).join("\n");
+      await setState(wa_id, "PICK_DOCTOR", {});
+      await safeSendText(
+        wa_id,
+        `✅ Datos guardados.\n\n👨‍⚕️ Elige un doctor:\n${lines}\n\nResponde con el número.`
       );
       return;
     }
@@ -149,7 +220,7 @@ const ReceiveMessage = async (req, res) => {
         return;
       }
       await setState(wa_id, "PICK_REASON", { ...current.temp, slot_id });
-      await safeSendText(wa_id, "📝 ¿Motivo de la cita? (ej: dolor de cabeza). Si no, responde: NA");
+      await safeSendText(wa_id, "📝 ¿Motivo de la cita? Si no, responde: NA");
       return;
     }
 
@@ -157,7 +228,7 @@ const ReceiveMessage = async (req, res) => {
     if (current.state === "PICK_REASON") {
       const reason = text === "NA" ? null : text;
       await setState(wa_id, "CONFIRM", { ...current.temp, reason });
-      await safeSendText(wa_id, "✅ Confirmar cita?\nResponde:\n1) Sí\n2) No (cancelar)\n0) Reiniciar");
+      await safeSendText(wa_id, "✅ Confirmar cita?\n1) Sí\n2) No\n0) Reiniciar");
       return;
     }
 
@@ -165,7 +236,7 @@ const ReceiveMessage = async (req, res) => {
     if (current.state === "CONFIRM") {
       if (text === "2") {
         await clearState(wa_id);
-        await safeSendText(wa_id, "❌ Cancelado.\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar/Reprogramar");
+        await safeSendText(wa_id, "❌ Cancelado.\n\n1) Agendar cita\n2) Consultar cita\n3) Cancelar cita");
         return;
       }
 
@@ -174,11 +245,14 @@ const ReceiveMessage = async (req, res) => {
         return;
       }
 
+      const patient = await getPatientByWaId(wa_id);
+
       const { doctor_id, slot_id, reason } = current.temp;
 
       const result = await bookAppointment({
         wa_id,
-        full_name: null,
+        full_name: patient?.full_name || null,
+        identity_number: patient?.identity_number || null,
         doctor_id,
         slot_id,
         reason,
@@ -189,15 +263,38 @@ const ReceiveMessage = async (req, res) => {
       const time = String(result.appointment.appt_time).slice(0, 5);
       const date = String(result.appointment.appt_date).slice(0, 10);
 
-      await safeSendText(wa_id, `✅ Cita agendada!\n📅 ${date}\n⏰ ${time}\n\nEscribe 0 para menú.`);
+      await safeSendText(
+        wa_id,
+        `✅ Cita agendada!\n📅 ${date}\n⏰ ${time}\n\nEscribe 0 para menú.`
+      );
       return;
     }
 
-    // fallback
+    // CANCELAR
+    if (current.state === "CANCEL_PICK") {
+      const appointment_id = parseInt(text, 10);
+      if (!appointment_id) {
+        await safeSendText(wa_id, "❌ ID inválido. Escribe el ID de la cita a cancelar.");
+        return;
+      }
+
+      try {
+        await cancelAppointment(wa_id, appointment_id);
+        await clearState(wa_id);
+        await safeSendText(
+          wa_id,
+          "✅ Cita cancelada correctamente.\nEl horario volvió a quedar disponible.\n\nEscribe 0 para menú."
+        );
+      } catch (e) {
+        await safeSendText(wa_id, "❌ No pude cancelar esa cita. Verifica el ID o escribe 0 para reiniciar.");
+      }
+      return;
+    }
+
     await clearState(wa_id);
     await safeSendText(wa_id, "⚠️ Reinicié el flujo. Escribe 0 para empezar.");
   } catch (e) {
-    console.log("Webhook error:", e);
+    console.log("Webhook error:", e?.response?.data || e);
   }
 };
 

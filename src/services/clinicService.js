@@ -18,28 +18,44 @@ async function listFreeSlots(doctor_id, date) {
   return r.rows;
 }
 
-async function ensurePatient(wa_id, full_name = null) {
+async function getPatientByWaId(wa_id) {
   const r = await pool.query(
-    `INSERT INTO patients (wa_id, full_name)
-     VALUES ($1,$2)
-     ON CONFLICT (wa_id) DO UPDATE SET full_name = COALESCE(EXCLUDED.full_name, patients.full_name)
-     RETURNING id, wa_id, full_name`,
-    [wa_id, full_name]
+    `SELECT id, wa_id, full_name, identity_number
+     FROM patients
+     WHERE wa_id=$1`,
+    [wa_id]
+  );
+  return r.rows[0] || null;
+}
+
+async function upsertPatient({ wa_id, full_name = null, identity_number = null }) {
+  const r = await pool.query(
+    `INSERT INTO patients (wa_id, full_name, identity_number)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (wa_id)
+     DO UPDATE SET
+       full_name = COALESCE(EXCLUDED.full_name, patients.full_name),
+       identity_number = COALESCE(EXCLUDED.identity_number, patients.identity_number)
+     RETURNING id, wa_id, full_name, identity_number`,
+    [wa_id, full_name, identity_number]
   );
   return r.rows[0];
 }
 
-async function bookAppointment({ wa_id, full_name, doctor_id, slot_id, reason }) {
+async function bookAppointment({ wa_id, full_name, identity_number, doctor_id, slot_id, reason }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
     const p = await client.query(
-      `INSERT INTO patients (wa_id, full_name)
-       VALUES ($1, $2)
-       ON CONFLICT (wa_id) DO UPDATE SET full_name = COALESCE(EXCLUDED.full_name, patients.full_name)
-       RETURNING id, wa_id, full_name`,
-      [wa_id, full_name || null]
+      `INSERT INTO patients (wa_id, full_name, identity_number)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (wa_id)
+       DO UPDATE SET
+         full_name = COALESCE(EXCLUDED.full_name, patients.full_name),
+         identity_number = COALESCE(EXCLUDED.identity_number, patients.identity_number)
+       RETURNING id, wa_id, full_name, identity_number`,
+      [wa_id, full_name || null, identity_number || null]
     );
     const patientId = p.rows[0].id;
 
@@ -73,4 +89,76 @@ async function bookAppointment({ wa_id, full_name, doctor_id, slot_id, reason })
   }
 }
 
-module.exports = { listDoctors, listFreeSlots, ensurePatient, bookAppointment };
+async function listMyAppointments(wa_id) {
+  const r = await pool.query(
+    `SELECT 
+        a.id,
+        a.appt_date,
+        a.appt_time,
+        a.status,
+        a.slot_id,
+        d.full_name AS doctor_name,
+        d.specialty
+     FROM appointments a
+     JOIN patients p ON p.id = a.patient_id
+     JOIN doctors d ON d.id = a.doctor_id
+     WHERE p.wa_id = $1
+       AND a.status <> 'CANCELLED'
+     ORDER BY a.appt_date, a.appt_time`,
+    [wa_id]
+  );
+  return r.rows;
+}
+
+async function cancelAppointment(wa_id, appointment_id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const a = await client.query(
+      `SELECT a.id, a.slot_id, a.status
+       FROM appointments a
+       JOIN patients p ON p.id = a.patient_id
+       WHERE a.id = $1 AND p.wa_id = $2
+       FOR UPDATE`,
+      [appointment_id, wa_id]
+    );
+
+    if (a.rowCount === 0) throw new Error("APPOINTMENT_NOT_FOUND");
+    if (a.rows[0].status === "CANCELLED") throw new Error("APPOINTMENT_ALREADY_CANCELLED");
+
+    await client.query(
+      `UPDATE appointments
+       SET status = 'CANCELLED'
+       WHERE id = $1`,
+      [appointment_id]
+    );
+
+    if (a.rows[0].slot_id) {
+      await client.query(
+        `UPDATE doctor_slots
+         SET status = 'FREE'
+         WHERE id = $1`,
+        [a.rows[0].slot_id]
+      );
+    }
+
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  listDoctors,
+  listFreeSlots,
+  getPatientByWaId,
+  upsertPatient,
+  bookAppointment,
+  listMyAppointments,
+  cancelAppointment
+};
