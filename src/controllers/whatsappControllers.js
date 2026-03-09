@@ -45,6 +45,9 @@ async function safeSendText(to, text) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
+  console.log("DEBUG TOKEN:", token ? "OK" : "UNDEFINED");
+  console.log("DEBUG PHONE_ID:", phoneId ? phoneId : "UNDEFINED");
+
   if (!token || !phoneId) {
     console.log("BOT (no-send mode) ->", to, ":", text);
     myConsole.log({ to, text });
