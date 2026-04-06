@@ -16,7 +16,7 @@ const {
 const { sendText } = require("../services/whatsappSend");
 
 const MENU_TEXT =
-  "Hola 👋 Soy DocBot Citas, asistente del hospital 🏥.\n\n¿En qué le puedo ayudar hoy?\n\n1) Agendar cita\n2) Consultar citas\n3) Cancelar cita\n0) Reiniciar";
+  "Hola 👋 Soy DocBot Citas, asistente del hospital 🏥.\n\n¿En qué le puedo ayudar hoy?\n\n1) Agendar cita\n2) Consultar citas\n3) Cancelar cita\n4) Terminar conversación\n0) Reiniciar";
 
 const GOODBYE_TEXT =
   "Entendido 👍\nHa sido un gusto atenderle.\nPuede escribirnos nuevamente cuando lo necesite.";
@@ -70,7 +70,7 @@ function isYes(text) {
 
 function isNo(text) {
   const normalized = normalizeText(text);
-  return ["2", "no", "n", "cancelar", "salir", "finalizar"].includes(normalized);
+  return ["2", "no", "n", "cancelar"].includes(normalized);
 }
 
 function isAnotherDay(text) {
@@ -86,6 +86,11 @@ function isAnotherDay(text) {
     "otro horario",
     "agendar otro",
   ].includes(normalized);
+}
+
+function isEndConversation(text) {
+  const normalized = normalizeText(text);
+  return ["4", "salir", "terminar", "finalizar", "adios", "adiós", "fin"].includes(normalized);
 }
 
 function titleCase(value) {
@@ -111,6 +116,14 @@ function getNextDateISO(dateText) {
   const utcDate = new Date(Date.UTC(year, month - 1, day));
   utcDate.setUTCDate(utcDate.getUTCDate() + 1);
   return utcDate.toISOString().slice(0, 10);
+}
+
+function isStateExpired(updatedAt, minutes = 10) {
+  if (!updatedAt) return false;
+  const updated = new Date(updatedAt).getTime();
+  const now = Date.now();
+  const diffMinutes = (now - updated) / (1000 * 60);
+  return diffMinutes >= minutes;
 }
 
 function formatDateHuman(dateText) {
@@ -173,7 +186,7 @@ async function sendSpecialtiesMenu(wa_id) {
   await setState(wa_id, "PICK_SPECIALTY", { specialties });
   await safeSendText(
     wa_id,
-    `Perfecto 😊\nSeleccione la especialidad que necesita:\n\n${lines}\n\nResponda con el número de la opción.`
+    `Perfecto 😊\nSeleccione la especialidad que necesita:\n\n${lines}\n\nResponda con el número de la opción.\n\nTambién puede escribir 4 para terminar la conversación.`
   );
   return true;
 }
@@ -194,7 +207,7 @@ async function sendDoctorsMenu(wa_id, specialty) {
   await setState(wa_id, "PICK_DOCTOR", { specialty, doctors });
   await safeSendText(
     wa_id,
-    `Muy bien. Para *${specialty}* estos son los médicos disponibles:\n\n${lines}\n\nResponda con el número del médico.`
+    `Muy bien. Para *${specialty}* estos son los médicos disponibles:\n\n${lines}\n\nResponda con el número del médico.\n\nTambién puede escribir 4 para terminar la conversación.`
   );
   return true;
 }
@@ -210,7 +223,7 @@ async function suggestNearestAvailability(wa_id, temp) {
     });
     await safeSendText(
       wa_id,
-      `En este momento no encontré horarios disponibles para *${temp.doctor_name}*.\n\nPuede elegir otro médico o escribir 0 para volver al menú.`
+      `En este momento no encontré horarios disponibles para *${temp.doctor_name}*.\n\nPuede elegir otro médico o escribir 0 para volver al menú.\nTambién puede escribir 4 para terminar la conversación.`
     );
     return false;
   }
@@ -243,13 +256,15 @@ async function suggestNearestAvailability(wa_id, temp) {
 
   await safeSendText(
     wa_id,
-    `Encontré la fecha más cercana disponible con *${temp.doctor_name}* 😊\n\n📅 ${formatDateHuman(date)}\n\nEstas son las horas disponibles:\n${lines}\n\nResponda con el número de la hora que prefiera.\nSi desea que le busque otro día cercano, escriba 9.`
+    `Encontré la fecha más cercana disponible con *${temp.doctor_name}* 😊\n\n📅 ${formatDateHuman(date)}\n\nEstas son las horas disponibles:\n${lines}\n\nResponda con el número de la hora que prefiera.\nSi desea que le busque otro día cercano, escriba 9.\nTambién puede escribir 4 para terminar la conversación.`
   );
   return true;
 }
 
 function appointmentSummary(temp) {
-  return `📅 ${formatDateHuman(temp.selected_date)}\n⏰ ${formatTimeHuman(temp.selected_time)}\n👨‍⚕️ ${temp.doctor_name}\n🩺 ${temp.specialty}${temp.reason ? `\n📝 Motivo: ${temp.reason}` : ""}`;
+  return `📅 ${formatDateHuman(temp.selected_date)}\n⏰ ${formatTimeHuman(temp.selected_time)}\n👨‍⚕️ ${temp.doctor_name}\n🩺 ${temp.specialty}${
+    temp.reason ? `\n📝 Motivo: ${temp.reason}` : ""
+  }`;
 }
 
 function formatAppointmentsList(appts) {
@@ -284,7 +299,24 @@ const ReceiveMessage = async (req, res) => {
       return;
     }
 
+    if (isEndConversation(text)) {
+      await clearState(wa_id);
+      await safeSendText(wa_id, GOODBYE_TEXT);
+      return;
+    }
+
     let current = await getState(wa_id);
+
+    if (current && isStateExpired(current.updated_at, 10)) {
+      await clearState(wa_id);
+      await setState(wa_id, "MENU", {});
+      await safeSendText(
+        wa_id,
+        `⌛ La conversación anterior se cerró por inactividad.\n\n${MENU_TEXT}`
+      );
+      return;
+    }
+
     if (!current) {
       await setState(wa_id, "MENU", {});
       await safeSendText(wa_id, MENU_TEXT);
@@ -297,13 +329,19 @@ const ReceiveMessage = async (req, res) => {
 
         if (!patient?.full_name) {
           await setState(wa_id, "REGISTER_NAME", {});
-          await safeSendText(wa_id, "Antes de continuar, por favor escriba su nombre completo.");
+          await safeSendText(
+            wa_id,
+            "Antes de continuar, por favor escriba su nombre completo.\n\nTambién puede escribir 4 para terminar la conversación."
+          );
           return;
         }
 
         if (!patient?.identity_number) {
           await setState(wa_id, "REGISTER_IDENTITY", { full_name: patient.full_name });
-          await safeSendText(wa_id, "Gracias. Ahora escriba su número de identidad.");
+          await safeSendText(
+            wa_id,
+            "Gracias. Ahora escriba su número de identidad.\n\nTambién puede escribir 4 para terminar la conversación."
+          );
           return;
         }
 
@@ -317,14 +355,14 @@ const ReceiveMessage = async (req, res) => {
         if (!appts.length) {
           await safeSendText(
             wa_id,
-            "No encontré citas registradas a su nombre.\n\nSi desea agendar una, escriba 1."
+            "No encontré citas registradas a su nombre.\n\nSi desea agendar una, escriba 1.\nTambién puede escribir 4 para terminar la conversación."
           );
           return;
         }
 
         await safeSendText(
           wa_id,
-          `Estas son sus citas activas:\n\n${formatAppointmentsList(appts)}\n\nSi desea volver al menú, escriba 0.`
+          `Estas son sus citas activas:\n\n${formatAppointmentsList(appts)}\n\nSi desea volver al menú, escriba 0.\nSi desea terminar la conversación, escriba 4.`
         );
         return;
       }
@@ -335,7 +373,7 @@ const ReceiveMessage = async (req, res) => {
         if (!appts.length) {
           await safeSendText(
             wa_id,
-            "No tiene citas activas para cancelar en este momento.\n\nSi desea agendar una nueva, escriba 1."
+            "No tiene citas activas para cancelar en este momento.\n\nSi desea agendar una nueva, escriba 1.\nTambién puede escribir 4 para terminar la conversación."
           );
           return;
         }
@@ -343,7 +381,7 @@ const ReceiveMessage = async (req, res) => {
         await setState(wa_id, "CANCEL_PICK", { appointments: appts });
         await safeSendText(
           wa_id,
-          `Seleccione la cita que desea cancelar:\n\n${formatAppointmentsList(appts)}\n\nResponda con el número de la cita.`
+          `Seleccione la cita que desea cancelar:\n\n${formatAppointmentsList(appts)}\n\nResponda con el número de la cita.\nTambién puede escribir 4 para terminar la conversación.`
         );
         return;
       }
@@ -354,7 +392,10 @@ const ReceiveMessage = async (req, res) => {
 
     if (current.state === "REGISTER_NAME") {
       await setState(wa_id, "REGISTER_IDENTITY", { full_name: text });
-      await safeSendText(wa_id, "Perfecto. Ahora escriba su número de identidad.");
+      await safeSendText(
+        wa_id,
+        "Perfecto. Ahora escriba su número de identidad.\n\nTambién puede escribir 4 para terminar la conversación."
+      );
       return;
     }
 
@@ -374,7 +415,10 @@ const ReceiveMessage = async (req, res) => {
       const specialty = specialties[option - 1];
 
       if (!option || !specialty) {
-        await safeSendText(wa_id, "Especialidad inválida. Por favor responda con uno de los números mostrados.");
+        await safeSendText(
+          wa_id,
+          "Especialidad inválida. Por favor responda con uno de los números mostrados o escriba 4 para terminar la conversación."
+        );
         return;
       }
 
@@ -388,7 +432,10 @@ const ReceiveMessage = async (req, res) => {
       const doctor = doctors[option - 1];
 
       if (!option || !doctor) {
-        await safeSendText(wa_id, "Médico inválido. Por favor responda con el número correcto.");
+        await safeSendText(
+          wa_id,
+          "Médico inválido. Por favor responda con el número correcto o escriba 4 para terminar la conversación."
+        );
         return;
       }
 
@@ -420,7 +467,7 @@ const ReceiveMessage = async (req, res) => {
       if (!option || !slot) {
         await safeSendText(
           wa_id,
-          "Hora inválida. Responda con el número de la hora o escriba 9 para que le busque otro día cercano."
+          "Hora inválida. Responda con el número de la hora, escriba 9 para que le busque otro día cercano o escriba 4 para terminar la conversación."
         );
         return;
       }
@@ -438,7 +485,7 @@ const ReceiveMessage = async (req, res) => {
 
       await safeSendText(
         wa_id,
-        `Ha elegido:\n\n📅 ${formatDateHuman(current.temp.suggested_date)}\n⏰ ${formatTimeHuman(slot.time)}\n👨‍⚕️ ${current.temp.doctor_name}\n\nSi desea, puede escribir brevemente el motivo de la cita.\nSi prefiere omitirlo, escriba NO.`
+        `Ha elegido:\n\n📅 ${formatDateHuman(current.temp.suggested_date)}\n⏰ ${formatTimeHuman(slot.time)}\n👨‍⚕️ ${current.temp.doctor_name}\n\nSi desea, puede escribir brevemente el motivo de la cita.\nSi prefiere omitirlo, escriba NO.\nTambién puede escribir 4 para terminar la conversación.`
       );
       return;
     }
@@ -455,7 +502,7 @@ const ReceiveMessage = async (req, res) => {
       await setState(wa_id, "CONFIRM", nextTemp);
       await safeSendText(
         wa_id,
-        `Por favor confirme su cita:\n\n${appointmentSummary(nextTemp)}\n\n1) Confirmar cita\n2) Ver otro día cercano\n3) Cancelar solicitud`
+        `Por favor confirme su cita:\n\n${appointmentSummary(nextTemp)}\n\n1) Confirmar cita\n2) Ver otro día cercano\n3) Cancelar solicitud\n4) Terminar conversación`
       );
       return;
     }
@@ -479,7 +526,10 @@ const ReceiveMessage = async (req, res) => {
       }
 
       if (!isYes(text)) {
-        await safeSendText(wa_id, "Por favor responda 1 para confirmar, 2 para ver otro día o 3 para cancelar.");
+        await safeSendText(
+          wa_id,
+          "Por favor responda 1 para confirmar, 2 para ver otro día, 3 para cancelar o 4 para terminar la conversación."
+        );
         return;
       }
 
@@ -514,7 +564,7 @@ const ReceiveMessage = async (req, res) => {
         return;
       }
 
-      await safeSendText(wa_id, "Por favor responda 1 para agendar otra cita o 2 para finalizar.");
+      await safeSendText(wa_id, "Por favor responda 1 para agendar otra cita, 2 para finalizar o 4 para terminar la conversación.");
       return;
     }
 
@@ -523,7 +573,10 @@ const ReceiveMessage = async (req, res) => {
       const appointment = (current.temp.appointments || [])[option - 1];
 
       if (!option || !appointment) {
-        await safeSendText(wa_id, "Opción inválida. Responda con el número de la cita que desea cancelar.");
+        await safeSendText(
+          wa_id,
+          "Opción inválida. Responda con el número de la cita que desea cancelar o escriba 4 para terminar la conversación."
+        );
         return;
       }
 
@@ -535,7 +588,10 @@ const ReceiveMessage = async (req, res) => {
           `La cita fue cancelada correctamente ✅\n\n📅 ${formatDateHuman(appointment.appt_date)}\n⏰ ${formatTimeHuman(appointment.appt_time)}\n👨‍⚕️ ${appointment.doctor_name}`
         );
       } catch (e) {
-        await safeSendText(wa_id, "No pude cancelar esa cita en este momento. Intente nuevamente o escriba 0 para volver al menú.");
+        await safeSendText(
+          wa_id,
+          "No pude cancelar esa cita en este momento. Intente nuevamente, escriba 0 para volver al menú o 4 para terminar la conversación."
+        );
       }
       return;
     }
