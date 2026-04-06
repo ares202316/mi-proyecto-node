@@ -1,0 +1,30 @@
+{
+  to: '50499999999',
+  text: '❌ Doctor inválido. Responde con el número del doctor.'
+}
+{
+  to: '50499999999',
+  text: '📅 Escribe la fecha (YYYY-MM-DD). Ej: 2026-03-04'
+}
+{
+  to: '50499999999',
+  text: '⏰ Cupos disponibles:\n' +
+    '2) 08:30\n' +
+    '3) 09:00\n' +
+    '4) 09:30\n' +
+    '5) 10:00\n' +
+    '\n' +
+    'Responde con el ID del cupo.'
+}
+{
+  to: '50499999999',
+  text: '📝 ¿Motivo de la cita? (ej: dolor de cabeza). Si no, responde: NA'
+}
+{
+  to: '50499999999',
+  text: '✅ Confirmar cita?\nResponde:\n1) Sí\n2) No (cancelar)\n0) Reiniciar'
+}
+{
+  to: '50499999999',
+  text: '✅ Cita agendada!\n📅 Wed Mar 04\n⏰ 08:30\n\nEscribe 0 para menú.'
+}

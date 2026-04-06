@@ -1,10 +1,43 @@
 const pool = require("../db");
 
-async function listDoctors() {
+async function listSpecialties() {
   const r = await pool.query(
-    "SELECT id, full_name, specialty FROM doctors WHERE active=true ORDER BY id"
+    `SELECT DISTINCT specialty
+     FROM doctors
+     WHERE active = true
+       AND specialty IS NOT NULL
+       AND TRIM(specialty) <> ''
+     ORDER BY specialty`
   );
+  return r.rows.map((row) => row.specialty);
+}
+
+async function listDoctors(specialty = null) {
+  const params = [];
+  let sql =
+    `SELECT id, full_name, specialty
+     FROM doctors
+     WHERE active = true`;
+
+  if (specialty) {
+    params.push(specialty);
+    sql += ` AND specialty = $${params.length}`;
+  }
+
+  sql += ` ORDER BY specialty, full_name`;
+
+  const r = await pool.query(sql, params);
   return r.rows;
+}
+
+async function getDoctorById(doctor_id) {
+  const r = await pool.query(
+    `SELECT id, full_name, specialty
+     FROM doctors
+     WHERE id = $1 AND active = true`,
+    [doctor_id]
+  );
+  return r.rows[0] || null;
 }
 
 async function listFreeSlots(doctor_id, date) {
@@ -16,6 +49,22 @@ async function listFreeSlots(doctor_id, date) {
     [doctor_id, date]
   );
   return r.rows;
+}
+
+async function findNextAvailableDate(doctor_id, fromDate) {
+  const r = await pool.query(
+    `SELECT slot_date
+     FROM doctor_slots
+     WHERE doctor_id = $1
+       AND slot_date >= $2
+       AND status = 'FREE'
+     ORDER BY slot_date ASC, slot_time ASC
+     LIMIT 1`,
+    [doctor_id, fromDate]
+  );
+
+  if (!r.rowCount) return null;
+  return r.rows[0].slot_date;
 }
 
 async function getPatientByWaId(wa_id) {
@@ -154,8 +203,11 @@ async function cancelAppointment(wa_id, appointment_id) {
 }
 
 module.exports = {
+  listSpecialties,
   listDoctors,
+  getDoctorById,
   listFreeSlots,
+  findNextAvailableDate,
   getPatientByWaId,
   upsertPatient,
   bookAppointment,
