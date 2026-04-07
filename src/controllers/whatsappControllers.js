@@ -37,6 +37,7 @@ const VerifyToken = (req, res) => {
 function getUserText(message) {
   if (!message) return "";
   if (message.type === "text") return (message.text?.body || "").trim();
+
   if (message.type === "interactive") {
     return (
       message.interactive?.list_reply?.id ||
@@ -46,6 +47,7 @@ function getUserText(message) {
       ""
     ).trim();
   }
+
   return "";
 }
 
@@ -80,9 +82,12 @@ function isAnotherDay(text) {
     "otro",
     "otra",
     "otro dia",
+    "otro día",
     "otra fecha",
     "ver otra opcion",
+    "ver otra opción",
     "ver otro dia",
+    "ver otro día",
     "otro horario",
     "agendar otro",
   ].includes(normalized);
@@ -90,7 +95,9 @@ function isAnotherDay(text) {
 
 function isEndConversation(text) {
   const normalized = normalizeText(text);
-  return ["4", "salir", "terminar", "finalizar", "adios", "adiós", "fin"].includes(normalized);
+  return ["4", "salir", "terminar", "finalizar", "adios", "adiós", "fin"].includes(
+    normalized
+  );
 }
 
 function titleCase(value) {
@@ -101,18 +108,53 @@ function titleCase(value) {
     .join(" ");
 }
 
+function normalizeDateToISO(value) {
+  if (!value) return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value).trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+    return raw.slice(0, 10);
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return null;
+}
+
 function getTegucigalpaTodayISO() {
+  const now = new Date();
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Tegucigalpa",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
-  return formatter.format(new Date());
+
+  const parts = formatter.formatToParts(now);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
 }
 
 function getNextDateISO(dateText) {
-  const [year, month, day] = String(dateText).split("-").map(Number);
+  const iso = normalizeDateToISO(dateText);
+  if (!iso) throw new Error(`Fecha inválida en getNextDateISO: ${dateText}`);
+
+  const [year, month, day] = iso.split("-").map(Number);
   const utcDate = new Date(Date.UTC(year, month - 1, day));
   utcDate.setUTCDate(utcDate.getUTCDate() + 1);
   return utcDate.toISOString().slice(0, 10);
@@ -127,14 +169,17 @@ function isStateExpired(updatedAt, minutes = 10) {
 }
 
 function formatDateHuman(dateText) {
-  if (!dateText) return "";
-  const date = new Date(`${String(dateText).slice(0, 10)}T12:00:00Z`);
+  const iso = normalizeDateToISO(dateText);
+  if (!iso) return "";
+
+  const date = new Date(`${iso}T12:00:00Z`);
   const formatted = new Intl.DateTimeFormat("es-HN", {
     weekday: "long",
     day: "numeric",
     month: "long",
     timeZone: "UTC",
   }).format(date);
+
   return titleCase(formatted);
 }
 
@@ -142,6 +187,7 @@ function formatTimeHuman(timeText) {
   if (!timeText) return "";
   const raw = String(timeText).slice(0, 8);
   const date = new Date(`1970-01-01T${raw}Z`);
+
   return new Intl.DateTimeFormat("es-HN", {
     hour: "numeric",
     minute: "2-digit",
@@ -183,6 +229,7 @@ async function sendSpecialtiesMenu(wa_id) {
   }
 
   const lines = buildNumberedLines(specialties, (specialty) => specialty);
+
   await setState(wa_id, "PICK_SPECIALTY", { specialties });
   await safeSendText(
     wa_id,
@@ -204,6 +251,7 @@ async function sendDoctorsMenu(wa_id, specialty) {
   }
 
   const lines = buildNumberedLines(doctors, (doctor) => doctor.full_name);
+
   await setState(wa_id, "PICK_DOCTOR", { specialty, doctors });
   await safeSendText(
     wa_id,
@@ -221,6 +269,7 @@ async function suggestNearestAvailability(wa_id, temp) {
       specialty: temp.specialty,
       doctors: temp.doctors || [],
     });
+
     await safeSendText(
       wa_id,
       `En este momento no encontré horarios disponibles para *${temp.doctor_name}*.\n\nPuede elegir otro médico o escribir 0 para volver al menú.\nTambién puede escribir 4 para terminar la conversación.`
@@ -228,11 +277,18 @@ async function suggestNearestAvailability(wa_id, temp) {
     return false;
   }
 
-  const slots = await listFreeSlots(temp.doctor_id, date);
+  const normalizedDate = normalizeDateToISO(date);
+
+  if (!normalizedDate) {
+    throw new Error(`No se pudo normalizar la fecha devuelta por la BD: ${date}`);
+  }
+
+  const slots = await listFreeSlots(temp.doctor_id, normalizedDate);
+
   if (!slots.length) {
     return suggestNearestAvailability(wa_id, {
       ...temp,
-      search_from: getNextDateISO(date),
+      search_from: getNextDateISO(normalizedDate),
     });
   }
 
@@ -242,27 +298,29 @@ async function suggestNearestAvailability(wa_id, temp) {
   }));
 
   const lines = buildNumberedLines(slotOptions, (slot) => formatTimeHuman(slot.time));
-  const nextSearchFrom = getNextDateISO(date);
+  const nextSearchFrom = getNextDateISO(normalizedDate);
 
   await setState(wa_id, "PICK_TIME", {
     specialty: temp.specialty,
     doctors: temp.doctors || [],
     doctor_id: temp.doctor_id,
     doctor_name: temp.doctor_name,
-    suggested_date: String(date).slice(0, 10),
+    suggested_date: normalizedDate,
     slotOptions,
     next_search_from: nextSearchFrom,
   });
 
   await safeSendText(
     wa_id,
-    `Encontré la fecha más cercana disponible con *${temp.doctor_name}* 😊\n\n📅 ${formatDateHuman(date)}\n\nEstas son las horas disponibles:\n${lines}\n\nResponda con el número de la hora que prefiera.\nSi desea que le busque otro día cercano, escriba 9.\nTambién puede escribir 4 para terminar la conversación.`
+    `Encontré la fecha más cercana disponible con *${temp.doctor_name}* 😊\n\n📅 ${formatDateHuman(normalizedDate)}\n\nEstas son las horas disponibles:\n${lines}\n\nResponda con el número de la hora que prefiera.\nSi desea que le busque otro día cercano, escriba 9.\nTambién puede escribir 4 para terminar la conversación.`
   );
   return true;
 }
 
 function appointmentSummary(temp) {
-  return `📅 ${formatDateHuman(temp.selected_date)}\n⏰ ${formatTimeHuman(temp.selected_time)}\n👨‍⚕️ ${temp.doctor_name}\n🩺 ${temp.specialty}${
+  return `📅 ${formatDateHuman(temp.selected_date)}\n⏰ ${formatTimeHuman(
+    temp.selected_time
+  )}\n👨‍⚕️ ${temp.doctor_name}\n🩺 ${temp.specialty}${
     temp.reason ? `\n📝 Motivo: ${temp.reason}` : ""
   }`;
 }
@@ -270,7 +328,9 @@ function appointmentSummary(temp) {
 function formatAppointmentsList(appts) {
   return appts
     .map((appt, index) => {
-      return `${index + 1}) ${formatDateHuman(appt.appt_date)} — ${formatTimeHuman(appt.appt_time)} — ${appt.doctor_name} (${appt.specialty})`;
+      return `${index + 1}) ${formatDateHuman(appt.appt_date)} — ${formatTimeHuman(
+        appt.appt_time
+      )} — ${appt.doctor_name} (${appt.specialty})`;
     })
     .join("\n");
 }
@@ -383,6 +443,12 @@ const ReceiveMessage = async (req, res) => {
           wa_id,
           `Seleccione la cita que desea cancelar:\n\n${formatAppointmentsList(appts)}\n\nResponda con el número de la cita.\nTambién puede escribir 4 para terminar la conversación.`
         );
+        return;
+      }
+
+      if (text === "4") {
+        await clearState(wa_id);
+        await safeSendText(wa_id, GOODBYE_TEXT);
         return;
       }
 
@@ -502,7 +568,9 @@ const ReceiveMessage = async (req, res) => {
       await setState(wa_id, "CONFIRM", nextTemp);
       await safeSendText(
         wa_id,
-        `Por favor confirme su cita:\n\n${appointmentSummary(nextTemp)}\n\n1) Confirmar cita\n2) Ver otro día cercano\n3) Cancelar solicitud\n4) Terminar conversación`
+        `Por favor confirme su cita:\n\n${appointmentSummary(
+          nextTemp
+        )}\n\n1) Confirmar cita\n2) Ver otro día cercano\n3) Cancelar solicitud\n4) Terminar conversación`
       );
       return;
     }
@@ -547,7 +615,11 @@ const ReceiveMessage = async (req, res) => {
       await setState(wa_id, "AFTER_BOOKING", {});
       await safeSendText(
         wa_id,
-        `Su cita fue agendada con éxito ✅\n\n📅 ${formatDateHuman(result.appointment.appt_date)}\n⏰ ${formatTimeHuman(result.appointment.appt_time)}\n👨‍⚕️ ${current.temp.doctor_name}\n\nLe recomendamos llegar 15 minutos antes.\n\n¿Desea agendar otra cita?\n1) Sí\n2) No`
+        `Su cita fue agendada con éxito ✅\n\n📅 ${formatDateHuman(
+          result.appointment.appt_date
+        )}\n⏰ ${formatTimeHuman(result.appointment.appt_time)}\n👨‍⚕️ ${
+          current.temp.doctor_name
+        }\n\nLe recomendamos llegar 15 minutos antes.\n\n¿Desea agendar otra cita?\n1) Sí\n2) No`
       );
       return;
     }
@@ -564,7 +636,10 @@ const ReceiveMessage = async (req, res) => {
         return;
       }
 
-      await safeSendText(wa_id, "Por favor responda 1 para agendar otra cita, 2 para finalizar o 4 para terminar la conversación.");
+      await safeSendText(
+        wa_id,
+        "Por favor responda 1 para agendar otra cita, 2 para finalizar o 4 para terminar la conversación."
+      );
       return;
     }
 
@@ -585,7 +660,9 @@ const ReceiveMessage = async (req, res) => {
         await clearState(wa_id);
         await safeSendText(
           wa_id,
-          `La cita fue cancelada correctamente ✅\n\n📅 ${formatDateHuman(appointment.appt_date)}\n⏰ ${formatTimeHuman(appointment.appt_time)}\n👨‍⚕️ ${appointment.doctor_name}`
+          `La cita fue cancelada correctamente ✅\n\n📅 ${formatDateHuman(
+            appointment.appt_date
+          )}\n⏰ ${formatTimeHuman(appointment.appt_time)}\n👨‍⚕️ ${appointment.doctor_name}`
         );
       } catch (e) {
         await safeSendText(
